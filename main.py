@@ -1,9 +1,10 @@
 from PIL import Image, ImageDraw
 import numpy as np
 import os
+from conf import DICE_COLORS
 
 def image_to_dice(input_path, output_svg="dice_art.svg", output_png="dice_preview.png",
-                  cell=24, scale_factor=4):
+                  cell=24, scale_factor=4, black_only=False):
     """
     Convertit une image en mosaïque de dés (SVG + PNG preview).
     
@@ -12,23 +13,56 @@ def image_to_dice(input_path, output_svg="dice_art.svg", output_png="dice_previe
     output_png   : chemin de sortie du fichier PNG preview
     cell         : taille d'un dé en pixels
     scale_factor : multiplicateur pour la taille finale de l'image
+    black_only   : utilise uniquement des dés noirs (True/False)
     """
-    # 1. Charger image et convertir en niveaux de gris
-    img = Image.open(input_path).convert("L")
-    W, H = img.size
+    # 1. Charger image (garder les couleurs)
+    img_color = Image.open(input_path).convert("RGB")
+    img_gray = img_color.convert("L")
+    W, H = img_gray.size
     nx, ny = W // cell, H // cell
-    arr = np.array(img)
+    arr_gray = np.array(img_gray)
+    arr_color = np.array(img_color)
 
-    # 2. Moyenne de gris par bloc
+    # 2. Moyenne de gris et couleur par bloc
     means = np.zeros((ny, nx), dtype=float)
+    colors = np.zeros((ny, nx, 3), dtype=int)
     for j in range(ny):
         for i in range(nx):
-            block = arr[j*cell:(j+1)*cell, i*cell:(i+1)*cell]
-            means[j, i] = block.mean()
+            block_gray = arr_gray[j*cell:(j+1)*cell, i*cell:(i+1)*cell]
+            block_color = arr_color[j*cell:(j+1)*cell, i*cell:(i+1)*cell]
+            means[j, i] = block_gray.mean()
+            colors[j, i] = block_color.mean(axis=(0, 1))
 
     # 3. Quantification en 6 niveaux → faces de dé
     bins = np.linspace(0, 256, 7)
     faces = np.digitize(means, bins)  # 1..6
+    
+    # 3.5. Couleurs de dés disponibles (importées depuis conf.py)
+    # Compteur des dés par couleur
+    dice_count = {color_name: 0 for color_name in DICE_COLORS.keys()}
+    
+    def find_closest_color(rgb):
+        """Trouve la couleur de dé la plus proche"""
+        r, g, b = rgb
+        min_distance = float('inf')
+        closest_color = DICE_COLORS["white"]  # blanc par défaut
+        
+        for color_rgb in DICE_COLORS.values():
+            cr, cg, cb = color_rgb
+            # Distance euclidienne dans l'espace RGB
+            distance = ((r - cr) ** 2 + (g - cg) ** 2 + (b - cb) ** 2) ** 0.5
+            if distance < min_distance:
+                min_distance = distance
+                closest_color = color_rgb
+        
+        return closest_color
+    
+    def get_color_name(color_rgb):
+        """Trouve le nom de couleur correspondant au RGB"""
+        for color_name, rgb_value in DICE_COLORS.items():
+            if rgb_value == color_rgb:
+                return color_name
+        return "unknown"
 
     # 4. Fonctions utilitaires pour SVG
     def pip_positions(face, s):
@@ -63,14 +97,25 @@ def image_to_dice(input_path, output_svg="dice_art.svg", output_png="dice_previe
             x, y = i*cell*scale_factor, j*cell*scale_factor
             pad = cell * 0.07 * scale_factor
             w = h = (cell - 2*(cell*0.07)) * scale_factor
-            # Couleur du dé uniforme
-            fill = "rgb(240,240,245)"
+            # Couleur du dé
+            if black_only:
+                closest_color = DICE_COLORS["black"]
+            else:
+                original_color = colors[j, i]
+                closest_color = find_closest_color(original_color)
+            # Compter les dés par couleur
+            color_name = get_color_name(closest_color)
+            dice_count[color_name] += 1
+            r, g, b = closest_color
+            fill = f"rgb({r},{g},{b})"
             svg.append(svg_rect(x+pad, y+pad, w, h, rx=cell*0.12*scale_factor, ry=cell*0.12*scale_factor,
                                 fill=fill, stroke="#222"))
             pip_r = max(1.8, cell*0.06*scale_factor)
+            # Couleur des points : blanc sauf si fond blanc alors noir
+            pip_color = "black" if closest_color == DICE_COLORS["white"] else "white"
             for (px, py) in pip_positions(face, w):
                 cx, cy = x+pad+px, y+pad+py
-                svg.append(svg_circle(cx, cy, pip_r))
+                svg.append(svg_circle(cx, cy, pip_r, fill=pip_color))
 
     svg.append("</svg>")
     with open(output_svg, "w", encoding="utf-8") as f:
@@ -85,19 +130,31 @@ def image_to_dice(input_path, output_svg="dice_art.svg", output_png="dice_previe
             x, y = i*cell*scale_factor, j*cell*scale_factor
             pad = cell*0.07*scale_factor
             w = h = (cell - 2*(cell*0.07))*scale_factor
+            # Couleur du dé
+            if black_only:
+                closest_color = DICE_COLORS["black"]
+            else:
+                original_color = colors[j, i]
+                closest_color = find_closest_color(original_color)
             draw.rounded_rectangle([x+pad, y+pad, x+pad+w, y+pad+h],
                                    radius=int(cell*0.12*scale_factor),
-                                   fill=(240, 240, 245), outline=(30, 30, 30))
+                                   fill=closest_color, outline=(30, 30, 30))
             pip_r = max(1.8, cell*0.06*scale_factor)
+            # Couleur des points : blanc sauf si fond blanc alors noir
+            pip_color = (10, 10, 10) if closest_color == DICE_COLORS["white"] else (255, 255, 255)
             for (px, py) in pip_positions(face, w):
                 cx, cy = x+pad+px, y+pad+py
-                draw.ellipse([cx-pip_r, cy-pip_r, cx+pip_r, cy+pip_r], fill=(10, 10, 10))
+                draw.ellipse([cx-pip_r, cy-pip_r, cx+pip_r, cy+pip_r], fill=pip_color)
 
     preview.save(output_png)
     total_dice = nx * ny
     print(f"✅ Fini ! SVG: {output_svg}, PNG preview: {output_png}")
-    print(f"🎲 Nombre de dés nécessaires : {total_dice}")
+    print(f"🎲 Nombre de dés par couleur :")
+    for color_name, count in dice_count.items():
+        if count > 0:  # Afficher seulement les couleurs utilisées
+            print(f"   {color_name}: {count} dés")
+    print(f"   Total: {total_dice} dés")
 
 if __name__ == "__main__":
     # Remplacez "1710150656226.jpeg" par le nom de votre image
-    image_to_dice("1710150656226.jpeg", "dice_art.svg", "dice_preview.png", cell=3, scale_factor=9)
+    image_to_dice("pika.avif", "dice_art.svg", "dice_preview.png", cell=5, scale_factor=8, black_only=True)
